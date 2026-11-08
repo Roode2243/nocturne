@@ -7,6 +7,7 @@ export type Piece = {
   favorite: boolean
   created_at: string
   updated_at: string
+  formatting?: unknown
 }
 
 export const dateLabel = (date: string) => new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()

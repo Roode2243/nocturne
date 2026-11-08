@@ -1,0 +1,22 @@
+Nocturne font assets
+
+Latin regular WOFF2 files from the following Fontsource packages:
+@fontsource/lora@5.3.0
+@fontsource/playfair-display@5.3.0
+@fontsource/merriweather@5.3.0
+@fontsource/crimson-pro@5.3.0
+@fontsource/dm-sans@5.3.0
+@fontsource/manrope@5.3.0
+@fontsource/work-sans@5.3.0
+@fontsource/caveat@5.3.0
+@fontsource/dancing-script@5.3.0
+@fontsource/kalam@5.3.0
+@fontsource/patrick-hand@5.3.0
+@fontsource/special-elite@5.3.0
+@fontsource/courier-prime@5.3.0
+@fontsource/ibm-plex-mono@5.3.0
+@fontsource/space-mono@5.3.0
+
+Inter variable WOFF2 files are from the upstream v4.1 release.
+https://github.com/rsms/inter/releases/tag/v4.1
+The Inter license is included as ../../Inter-LICENSE.txt.

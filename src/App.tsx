@@ -1,17 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, SetStateAction } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { AnimatePresence, motion, useMotionValue, useTransform } from 'motion/react'
 import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronRight, Cloud, Download, Eye, EyeOff, Heart, Layers, LibraryBig, LoaderCircle, LockKeyhole, LogOut, Mail, Pencil, Plus, Search, Settings2, ShieldCheck, Shuffle, Sparkles, UserRound, WifiOff, X } from 'lucide-react'
 import { configured, supabase } from './supabase'
 import type { Piece } from './data'
 import { dateLabel, density, exportedMarkdown } from './data'
+import TypographyToolbar from './TypographyToolbar'
+import { bodyTypography, readFormatting } from './typography'
+import type { Formatting } from './typography'
 
 type Tab = 'deck' | 'library' | 'saved' | 'me'
 type LibraryMode = 'collection' | 'timeline' | 'random'
-type EditorData = { id?: string, title: string, body: string, kind: Piece['kind'] }
+type EditorData = {
+  id?: string
+  title: string
+  body: string
+  kind: Piece['kind']
+  formatting: Partial<Formatting>
+  dirty?: boolean
+}
 
-const initialEditor = (): EditorData => ({ title: '', body: '', kind: 'Poem' })
+const initialEditor = (): EditorData => ({ title: '', body: '', kind: 'Poem', formatting: {} })
 const id = () => crypto.randomUUID()
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : 'Something went wrong. Please try again.'
 function download(name: string, content: string, type: string) {
@@ -132,7 +142,7 @@ function SwipeCard({ piece, behind, onSwipe, onRead, onFavorite }: { piece: Piec
       onClick={() => { if (!dragged.current) onRead(); dragged.current=false }} tabIndex={0} role="button" aria-label={'Read ' + piece.title}
       onKeyDown={e=>{if(e.key==='Enter' || e.key===' ') { e.preventDefault(); onRead() } }}>
       <div className="meta">{piece.kind.toUpperCase()} / {dateLabel(piece.created_at)}</div>
-      <div className="card-content"><h2>{piece.title}</h2><p className={'poem ' + density(piece.body)}>{piece.body}</p></div>
+      <div className="card-content"><h2>{piece.title}</h2><p className={'poem ' + density(piece.body)} style={bodyTypography(readFormatting(piece.formatting))}>{piece.body}</p></div>
       <div className="card-footer"><span>PRIVATE THOUGHT</span><button className={'icon-btn heart '+(piece.favorite?'active':'')} aria-label={piece.favorite?'Remove favourite':'Add favourite'} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onFavorite()}}><Heart fill={piece.favorite?'currentColor':'none'} size={20}/></button></div>
     </motion.article>
   </div>
@@ -152,11 +162,30 @@ function App() {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [reader, setReader] = useState<string | null>(null)
-  const [editor, setEditor] = useState<EditorData | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, EditorData>>({})
   const [rediscovered, setRediscovered] = useState<string | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const currentUser = session?.user.id
+  const editor = currentUser ? drafts[currentUser] ?? null : null
+  const setEditor = useCallback((action: SetStateAction<EditorData | null>) => {
+    if (!currentUser) return
+    setDrafts((previous) => {
+      const next = typeof action === 'function' ? action(previous[currentUser] ?? null) : action
+      const updated = { ...previous }
+      if (next) updated[currentUser] = next
+      else delete updated[currentUser]
+      return updated
+    })
+  }, [currentUser])
+  const updateEditor = (patch: Partial<EditorData>) => {
+    setEditor((previous) => previous && { ...previous, ...patch, dirty: true })
+  }
+  const closeEditor = useCallback(() => {
+    if (busy) return
+    if (editor?.dirty && !window.confirm('Discard the unsaved changes to this piece?')) return
+    setEditor(null)
+  }, [busy, editor?.dirty, setEditor])
 
   const announce = useCallback((message: string) => { setNotice(message); clearTimeout(noticeTimer.current);noticeTimer.current=setTimeout(()=>setNotice(''),4000) }, [])
   useEffect(()=>{const update=()=>setOnline(navigator.onLine);window.addEventListener('online',update);window.addEventListener('offline',update);return()=>{window.removeEventListener('online',update);window.removeEventListener('offline',update)}},[])
@@ -197,12 +226,14 @@ function App() {
     if (title.length>180 || body.length>50000){announce('This piece exceeds the length limit.');return}
     setBusy(true)
     try {
+      const changes = { title, body, kind: data.kind, formatting: data.formatting }
       if (data.id) {
-        const {error}=await supabase.from('pieces').update({title,body,kind:data.kind}).eq('id',data.id).eq('user_id',currentUser)
-        if(error)throw error
+        const { error } = await supabase.from('pieces').update(changes)
+          .eq('id', data.id).eq('user_id', currentUser).select('id').single()
+        if (error) throw new Error(error.message)
       } else {
-        const {error}=await supabase.from('pieces').insert({id:id(),user_id:currentUser,title,body,kind:data.kind})
-        if(error)throw error
+        const { error } = await supabase.from('pieces').insert({ ...changes, id: id(), user_id: currentUser })
+        if (error) throw new Error(error.message)
       }
       setEditor(null);setReader(null);setTab('deck');setIndex(0);await refresh();announce('Saved to your private collection')
     } catch(e){announce('Could not save: '+errorMessage(e))}finally{setBusy(false)}
@@ -232,12 +263,15 @@ function App() {
   }
   const signOut=async()=>{const{error}=await supabase!.auth.signOut();if(error)announce(error.message)}
   useEffect(()=>{const key=(e:KeyboardEvent)=>{
-    if(e.key==='Escape'){setReader(null);setEditor(null)}
+    if(e.key==='Escape' && !e.defaultPrevented){
+      if (editor) closeEditor()
+      else setReader(null)
+    }
     if(tab==='deck'&&!reader&&!editor&&sorted.length&&!['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)){
       if(e.key==='ArrowRight')onSwipe(1)
       if(e.key==='ArrowLeft')onSwipe(-1)
     }
-  };document.addEventListener('keydown',key);return()=>document.removeEventListener('keydown',key)},[tab,reader,editor,sorted.length])
+  };document.addEventListener('keydown',key);return()=>document.removeEventListener('keydown',key)},[tab,reader,editor,closeEditor,sorted.length])
 
   if(!configured)return <main className="auth-screen"><div className="auth-inner"><div className="brand-mark"><span className="crescent"/></div><div className="eyebrow">NOCTURNE SETUP</div><h1>Almost there.</h1><p>This deployment needs a Supabase project before private sign-in can work.</p><div className="auth-panel"><p>Add the <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> repository variables, run the SQL schema, then redeploy.</p><small>See README.md for the full setup.</small></div></div></main>
   if(!authReady)return <main className="splash"><LoaderCircle className="spin"/><p>Opening your space…</p></main>
@@ -246,7 +280,7 @@ function App() {
 
   const heading={deck:['AN ARCHIVE OF ALMOSTS','the in-between.','a collection of quiet things'],library:['YOUR COLLECTION','Library',"Everything you've kept, in one place."],saved:['THE ONES YOU LOVE','Saved','Your most revisited words.'],me:['YOUR SPACE','Your corner','A home for everything you’ve written.']}[tab]
   return <div className="app-shell">
-    <main className="app-main">
+    <main className="app-main" inert={Boolean(editor)}>
       <header className="header"><div><div className="eyebrow">{heading[0]}</div><h1>{heading[1]}</h1><small>{heading[2]}</small></div>{loading?<LoaderCircle size={17} className="spin muted"/>:!online?<WifiOff size={18} className="muted"/>:null}</header>
       <section className="main-pad">
         {tab==='deck' && (piece ? <>
@@ -277,22 +311,24 @@ function App() {
         </>}
       </section>
     </main>
-    <nav className="bottom-nav" aria-label="Primary navigation">
+    <nav className="bottom-nav" aria-label="Primary navigation" inert={Boolean(editor)}>
       {([{key:'deck',label:'deck',Icon:Layers},{key:'library',label:'library',Icon:LibraryBig}] as const).map(({key,label,Icon})=><button key={key} className={tab===key?'active':''} onClick={()=>setTab(key)}><Icon size={21}/><span>{label}</span></button>)}
       <button className="create-btn" onClick={()=>setEditor(initialEditor())} aria-label="Create new writing"><Plus size={29} strokeWidth={2.3}/></button>
       {([{key:'saved',label:'saved',Icon:Heart},{key:'me',label:'me',Icon:UserRound}] as const).map(({key,label,Icon})=><button key={key} className={tab===key?'active':''} onClick={()=>setTab(key)}><Icon size={21}/><span>{label}</span></button>)}
     </nav>
     <AnimatePresence>
       {displayedReader&&!editor&&<motion.div className="overlay" key={'reader-'+displayedReader.id} initial={{opacity:0,scale:.97,y:28}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:.97,y:20}} transition={{type:'spring',damping:28,stiffness:290}}>
-        <div className="overlay-inner"><div className="topbar"><button className="icon-btn" aria-label="Back" onClick={()=>setReader(null)}><ArrowLeft size={21}/></button><span className="meta">READING</span><button className="icon-btn" aria-label="Edit piece" onClick={()=>setEditor({id:displayedReader.id,title:displayedReader.title,body:displayedReader.body,kind:displayedReader.kind})}><Pencil size={20}/></button></div>
-          <div className="reader-meta">{displayedReader.kind.toUpperCase()} · {dateLabel(displayedReader.created_at)}</div><h1 className="reader-title">{displayedReader.title}</h1><p className={'reader-body '+density(displayedReader.body)}>{displayedReader.body}</p>
+        <div className="overlay-inner"><div className="topbar"><button className="icon-btn" aria-label="Back" onClick={()=>setReader(null)}><ArrowLeft size={21}/></button><span className="meta">READING</span><button className="icon-btn" aria-label="Edit piece" onClick={()=>setEditor({id:displayedReader.id,title:displayedReader.title,body:displayedReader.body,kind:displayedReader.kind,formatting:readFormatting(displayedReader.formatting)})}><Pencil size={20}/></button></div>
+          <div className="reader-meta">{displayedReader.kind.toUpperCase()} · {dateLabel(displayedReader.created_at)}</div><h1 className="reader-title">{displayedReader.title}</h1><p className={'reader-body '+density(displayedReader.body)} style={bodyTypography(readFormatting(displayedReader.formatting))}>{displayedReader.body}</p>
           <div className="reader-actions"><button onClick={()=>void toggleFavorite(displayedReader)}><Heart size={19} fill={displayedReader.favorite?'currentColor':'none'}/> {displayedReader.favorite?'Saved to favourites':'Save to favourites'}</button><button onClick={()=>void remove(displayedReader)} className="danger">Delete</button></div>
         </div></motion.div>}
-      {editor&&<motion.div className="overlay" key="editor" initial={{opacity:0,y:30}} animate={{opacity:1,y:0}} exit={{opacity:0,y:24}} transition={{duration:.24}}>
-        <div className="overlay-inner editor"><div className="topbar"><button className="icon-btn" aria-label="Close editor" onClick={()=>setEditor(null)}><X size={21}/></button><span className="meta">{editor.id?'EDIT PIECE':'NEW PIECE'}</span><button className="save-btn" disabled={busy} onClick={()=>void persist(editor)}>{busy?'Saving…':'Save'}</button></div>
-          <p className="editor-intro">A quiet place to begin.</p><input aria-label="Title" placeholder="Untitled" maxLength={180} value={editor.title} onChange={e=>setEditor(prev=>prev&&({...prev,title:e.target.value}))}/>
-          <textarea aria-label="Your writing" placeholder="Write whatever comes to mind..." maxLength={50000} value={editor.body} onChange={e=>setEditor(prev=>prev&&({...prev,body:e.target.value}))}/>
-          <div className="editor-footer"><div className="kind-picker">{(['Poem','Fragment','Thought'] as Piece['kind'][]).map(k=><button className={editor.kind===k?'chosen':''} onClick={()=>setEditor(prev=>prev&&({...prev,kind:k}))} key={k}>{k}</button>)}</div><span>Cloud save</span></div>
+      {editor&&<motion.div className="overlay" key="editor" role="dialog" aria-modal="true" aria-labelledby="editor-heading" initial={{opacity:0,y:30}} animate={{opacity:1,y:0}} exit={{opacity:0,y:24}} transition={{duration:.24}}>
+        <div className="overlay-inner editor"><div className="topbar"><button className="icon-btn" aria-label="Close editor" autoFocus disabled={busy} onClick={closeEditor}><X size={21}/></button><span className="meta" id="editor-heading">{editor.id?'EDIT PIECE':'NEW PIECE'}</span><button className="save-btn" disabled={busy} onClick={()=>void persist(editor)}>{busy?'Saving…':'Save'}</button></div>
+          <p className="editor-intro">A quiet place to begin.</p>
+          <input className="editor-title" aria-label="Title" placeholder="Untitled" maxLength={180} value={editor.title} readOnly={busy} onChange={(event) => updateEditor({ title: event.currentTarget.value })} />
+          <TypographyToolbar formatting={editor.formatting} onChange={(formatting) => updateEditor({ formatting })} disabled={busy} />
+          <textarea aria-label="Your writing" placeholder="Write whatever comes to mind..." maxLength={50000} value={editor.body} readOnly={busy} style={bodyTypography(editor.formatting)} onChange={(event) => updateEditor({ body: event.currentTarget.value })} />
+          <div className="editor-footer"><div className="kind-picker">{(['Poem','Fragment','Thought'] as Piece['kind'][]).map(k=><button className={editor.kind===k?'chosen':''} disabled={busy} onClick={()=>updateEditor({kind:k})} key={k}>{k}</button>)}</div><span>Cloud save</span></div>
         </div></motion.div>}
     </AnimatePresence>
     {notice&&<div role="status" className="toast">{notice}</div>}
